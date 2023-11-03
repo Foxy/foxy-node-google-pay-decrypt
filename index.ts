@@ -1,12 +1,12 @@
 import { createVerify, createPublicKey, createDecipheriv, createHmac, hkdfSync, Hmac, Decipher, KeyObject, Verify } from "crypto";
 import { IntermediateSigningKey, GooglePayPayload, GoogleSignedMessage, GoogleSignedKey, GoogleRootSigningKeys, DecryptedData } from './types';
 import { SENDER_ID, PROTOCOL_VERSION, CURVE, SALT, ALGORITHM, KEY_SIZE } from './consts';
-const ECKey = require('ec-key');
+import ECKey from 'ec-key';
 
 export default class GooglePaymentToken {
     private rootSigningKeys: Array<GoogleRootSigningKeys>;
     private gatewayId: string;
-    private privateKey: typeof ECKey;
+    private privateKey: ECKey;
 
     constructor (rootSigningKeys: Array<GoogleRootSigningKeys>, gatewayId: string, privateKeyRaw: string) {
         const currentTime = new Date();
@@ -22,7 +22,7 @@ export default class GooglePaymentToken {
     decrypt (payload: GooglePayPayload): Object {
         this.verifySignatures(payload);
         const signedMessage: GoogleSignedMessage = JSON.parse(payload.signedMessage);
-        const publicKey: typeof ECKey = new ECKey({
+        const publicKey: ECKey = new ECKey({
             curve: CURVE,
             publicKey: signedMessage.ephemeralPublicKey
         });
