@@ -1,0 +1,6 @@
+.github
+.vscode
+index.ts
+!index.d.ts
+!index.js
+tsconfig.json
