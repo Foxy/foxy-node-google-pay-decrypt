@@ -111,18 +111,20 @@ export default class GooglePaymentToken {
 
     const iv = createDecipheriv("aes-256-ctr", sencKey, Buffer.alloc(16));
     const decrypted = `${iv.update(message)}${iv.final("utf-8")}`;
+    let decryptedData: DecryptedData;
 
     try {
-      const decryptedData = JSON.parse(decrypted) as DecryptedData;
+      decryptedData = JSON.parse(decrypted) as DecryptedData;
 
-      if (Date.now() > parseInt(decryptedData.messageExpiration)) {
-        throw Error("The payment token has expired");
-      }
-
-      return decryptedData;
     } catch {
       throw Error(`Decoded payload is not a valid JSON string: ${decrypted}`);
     }
+
+    if (Date.now() > parseInt(decryptedData.messageExpiration)) {
+      throw Error("The payment token has expired");
+    }
+
+    return decryptedData;
   }
 
   private __validateIntermediateSigningKey(payload: GooglePayPayload) {
