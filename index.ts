@@ -1,157 +1,220 @@
-import { createVerify, createPublicKey, createDecipheriv, createHmac, hkdfSync, Hmac, Decipher, KeyObject, Verify } from "crypto";
-import { IntermediateSigningKey, GooglePayPayload, GoogleSignedMessage, GoogleSignedKey, GoogleRootSigningKeys, DecryptedData } from './types';
-import { SENDER_ID, PROTOCOL_VERSION, CURVE, SALT, ALGORITHM, KEY_SIZE } from './consts';
-const ECKey = require('ec-key');
+import {
+  createDecipheriv,
+  createPublicKey,
+  createVerify,
+  createHmac,
+  hkdfSync,
+} from "crypto";
 
+import type {
+  GoogleRootSigningKeys,
+  GoogleSignedMessage,
+  GooglePayPayload,
+  GoogleSignedKey,
+  DecryptedData,
+} from "./types.d.ts";
+
+import ECKey from "ec-key";
+
+/**
+ * This package allows you to decrypt a token received from Google Pay. This works in node and not in a browser,
+ * as it requires the built-in `crypto` package and secret keys (`.pem` files), which should never
+ * exist on the client anyway. The decryption methodology of this package is largely taken from
+ * the [Python Google Pay Token Decryption](https://github.com/yoyowallet/google-pay-token-decryption).
+ */
 export default class GooglePaymentToken {
-    private rootSigningKeys: Array<GoogleRootSigningKeys>;
-    private gatewayId: string;
-    private privateKey: typeof ECKey;
+  static PROTOCOL_VERSION = "ECv2";
+  static SENDER_ID = "Google";
+  static ALGORITHM = "sha256";
+  static KEY_SIZE = 64;
+  static CURVE = "prime256v1";
+  static SALT = Buffer.from(new Array(32).fill(0));
 
-    constructor (rootSigningKeys: Array<GoogleRootSigningKeys>, gatewayId: string, privateKeyRaw: string) {
-        const currentTime = new Date();
-        this.rootSigningKeys = rootSigningKeys.filter((key) => key.protocolVersion == PROTOCOL_VERSION && new Date(Number(key.keyExpiration)) > currentTime);
+  private __rootSigningKeys: GoogleRootSigningKeys[];
+  private __privateKey: ECKey;
+  private __gatewayId: string;
 
-        if (this.rootSigningKeys.length == 0) {
-            throw new Error(`At least one root signing key must be ${PROTOCOL_VERSION}-signed and have a valid expiration date.`);
+  constructor(
+    rootSigningKeys: GoogleRootSigningKeys[],
+    gatewayId: string,
+    privateKeyRaw: string
+  ) {
+    const now = Date.now();
+    const validKeys = rootSigningKeys.filter((key) => {
+      return (
+        key.protocolVersion === GooglePaymentToken.PROTOCOL_VERSION &&
+        key.keyExpiration &&
+        parseInt(key.keyExpiration) > now
+      );
+    });
+
+    if (validKeys.length === 0) {
+      const message = `At least one root signing key must be ${GooglePaymentToken.PROTOCOL_VERSION}-signed and have a valid expiration date.`;
+      throw new Error(message);
+    }
+
+    this.__rootSigningKeys = validKeys;
+    this.__privateKey = new ECKey(privateKeyRaw, "pem");
+    this.__gatewayId = gatewayId;
+  }
+
+  decrypt(payload: GooglePayPayload): DecryptedData {
+    this.__verifyIntermediateSignature(
+      payload.intermediateSigningKey.signatures,
+      payload.intermediateSigningKey.signedKey
+    );
+
+    const signedKey = this.__validateIntermediateSigningKey(payload);
+    this.__verifyMessageSignature(signedKey.keyValue, payload);
+
+    const signedMessage = JSON.parse(
+      payload.signedMessage
+    ) as GoogleSignedMessage;
+
+    const publicKey = new ECKey({
+      publicKey: signedMessage.ephemeralPublicKey,
+      curve: GooglePaymentToken.CURVE,
+    });
+
+    // Computing sharedSecret using ephemeralPublicKey and the given secret key
+    // More info: https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
+    const sharedSecret = this.__privateKey.computeSecret(publicKey);
+
+    // Generating 512 bit long (64 byte long) sharedKey using ephemeralPublicKey and the shared secret from the previous step
+    // More info: https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
+    const sharedKey = Buffer.from(
+      hkdfSync(
+        GooglePaymentToken.ALGORITHM,
+        Buffer.concat([
+          Buffer.from(signedMessage.ephemeralPublicKey, "base64"),
+          sharedSecret,
+        ]),
+        GooglePaymentToken.SALT,
+        Buffer.from(GooglePaymentToken.SENDER_ID),
+        GooglePaymentToken.KEY_SIZE
+      )
+    );
+
+    // Splitting the shared key to get two 256 bit long keys
+    // More info: https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
+    const subarrayEnd = GooglePaymentToken.KEY_SIZE / 2;
+    const sencKey = sharedKey.subarray(0, subarrayEnd);
+    const macKey = sharedKey.subarray(subarrayEnd);
+    const createdTag = createHmac(GooglePaymentToken.ALGORITHM, macKey);
+    const message = Buffer.from(signedMessage.encryptedMessage, "base64");
+    const tag = Buffer.from(signedMessage.tag, "base64");
+    createdTag.update(message);
+
+    if (tag.compare(createdTag.digest()) !== 0) {
+      throw Error("tag field is not valid!");
+    }
+
+    const iv = createDecipheriv("aes-256-ctr", sencKey, Buffer.alloc(16));
+    const decrypted = `${iv.update(message)}${iv.final("utf-8")}`;
+    let decryptedData: DecryptedData;
+
+    try {
+      decryptedData = JSON.parse(decrypted) as DecryptedData;
+
+    } catch {
+      throw Error(`Decoded payload is not a valid JSON string: ${decrypted}`);
+    }
+
+    if (Date.now() > parseInt(decryptedData.messageExpiration)) {
+      throw Error("The payment token has expired");
+    }
+
+    return decryptedData;
+  }
+
+  private __validateIntermediateSigningKey(payload: GooglePayPayload) {
+    const rawSignedKey = payload.intermediateSigningKey.signedKey;
+    const signedKey = JSON.parse(rawSignedKey) as GoogleSignedKey;
+
+    if (Date.now() > parseInt(signedKey.keyExpiration)) {
+      throw Error("Intermediate signature key has expired");
+    }
+
+    return signedKey;
+  }
+
+  private __generateSignedData(singedData: string, useRecepientId = false) {
+    // Generating buffer for checking signatures by contating byte lenght of each component. The length of the static components need to be in little-endian format.
+    // For examples check https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
+
+    const senderLength = Buffer.alloc(4);
+    const protocolLength = Buffer.alloc(4);
+    const signedKeyLength = Buffer.alloc(4);
+
+    senderLength.writeUint32LE(GooglePaymentToken.SENDER_ID.length);
+    protocolLength.writeUint32LE(GooglePaymentToken.PROTOCOL_VERSION.length);
+    signedKeyLength.writeUint32LE(singedData.length);
+
+    if (useRecepientId) {
+      const gatewayId = `gateway:${this.__gatewayId}`;
+      const gatewayIdLength = Buffer.alloc(4);
+      gatewayIdLength.writeUint32LE(gatewayId.length);
+
+      return Buffer.concat([
+        senderLength,
+        Buffer.from(GooglePaymentToken.SENDER_ID, "utf8"),
+        gatewayIdLength,
+        Buffer.from(gatewayId, "utf8"),
+        protocolLength,
+        Buffer.from(GooglePaymentToken.PROTOCOL_VERSION, "utf8"),
+        signedKeyLength,
+        Buffer.from(singedData, "utf8"),
+      ]);
+    }
+
+    return Buffer.concat([
+      senderLength,
+      Buffer.from(GooglePaymentToken.SENDER_ID, "utf8"),
+      protocolLength,
+      Buffer.from(GooglePaymentToken.PROTOCOL_VERSION, "utf8"),
+      signedKeyLength,
+      Buffer.from(singedData, "utf8"),
+    ]);
+  }
+
+  private __verifyIntermediateSignature(signatures: string[], key: string) {
+    const intermediateSignatureBuffer = this.__generateSignedData(key);
+
+    for (const rootSigningKey of this.__rootSigningKeys) {
+      const publicKey = createPublicKey({
+        encoding: "base64",
+        format: "der",
+        type: "spki",
+        key: rootSigningKey.keyValue,
+      });
+
+      const verifier = createVerify(GooglePaymentToken.ALGORITHM);
+      verifier.write(intermediateSignatureBuffer);
+      verifier.end();
+
+      for (const signature of signatures) {
+        if (!verifier.verify(publicKey, signature, "base64")) {
+          throw Error("Could not verify intermediate signing key signature");
         }
-        this.gatewayId = gatewayId;
-        this.privateKey = new ECKey(privateKeyRaw, 'pem');
+      }
     }
+  }
 
-    decrypt (payload: GooglePayPayload): Object {
-        this.verifySignatures(payload);
-        const signedMessage: GoogleSignedMessage = JSON.parse(payload.signedMessage);
-        const publicKey: typeof ECKey = new ECKey({
-            curve: CURVE,
-            publicKey: signedMessage.ephemeralPublicKey
-        });
-        /*
-            Computing sharedSecret using ephemeralPublicKey and the given secret key
-            More info: https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
-        */
-        const sharedSecret: Buffer = this.privateKey.computeSecret(publicKey);
-        /*
-            Generating 512 bit long (64 byte long) sharedKey using ephemeralPublicKey and the shared secret from the previous step
-            More info: https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
-        */
-        const sharedKey: Buffer = Buffer.from(hkdfSync(ALGORITHM, Buffer.concat([Buffer.from(signedMessage.ephemeralPublicKey, 'base64'), sharedSecret]), SALT, Buffer.from(SENDER_ID), KEY_SIZE));
-        /*
-            Splitting the shared key to get two 256 bit long keys
-            More info: https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
-        */
-        const symmetricEncryptionKey: Buffer = sharedKey.subarray(0, KEY_SIZE/2);
-        const macKey: Buffer = sharedKey.subarray(KEY_SIZE/2);
-        const encryptedMessage: Buffer = Buffer.from(signedMessage.encryptedMessage, 'base64');
-        const tag: Buffer = Buffer.from(signedMessage.tag, 'base64');
-        const createdTag: Hmac = createHmac(ALGORITHM, macKey);
-        createdTag.update(encryptedMessage);
+  private __verifyMessageSignature(key: string, payload: GooglePayPayload) {
+    const publicKey = createPublicKey({
+      encoding: "base64",
+      format: "der",
+      type: "spki",
+      key,
+    });
 
-        if (tag.compare(createdTag.digest()) != 0) {
-            throw Error('tag field is not valid!');
-        }
-        const decipher: Decipher = createDecipheriv('aes-256-ctr', symmetricEncryptionKey, Buffer.alloc(16));
-        let decrypted: string = decipher.update(encryptedMessage).toString();
-        decrypted += decipher.final('utf-8');
+    const signedData = this.__generateSignedData(payload.signedMessage, true);
+    const verifier = createVerify(GooglePaymentToken.ALGORITHM);
+    verifier.write(signedData);
+    verifier.end();
 
-
-        try {
-            let decrypted_data: DecryptedData = JSON.parse(decrypted);
-
-            if (this.checkKeyExpirationDate(decrypted_data.messageExpiration)) {
-                throw Error('The payment token has expired');
-            }
-            return decrypted_data;
-        } catch (e) {
-            throw Error(`Decoded payload is not a valid JSON string: ${decrypted}`);
-        }
+    if (!verifier.verify(publicKey, payload.signature, "base64")) {
+      throw Error("Could not verify message signature!");
     }
-
-    private verifySignatures (payload: GooglePayPayload): void {
-        this.verifyIntermediateSignature(payload);
-        const signedKey: GoogleSignedKey = this.validateIntermediateSigningKey(payload);
-        this.verifyMessageSignature(signedKey, payload);
-    }
-
-    private checkKeyExpirationDate(expirationDateString: string): boolean {
-        const currentDate = new Date();
-        const expirationDate = new Date(Number.parseInt(expirationDateString));
-
-        return currentDate > expirationDate;
-    }
-
-    private validateIntermediateSigningKey(payload: GooglePayPayload): GoogleSignedKey {
-        if (this.checkKeyExpirationDate(JSON.parse(payload.intermediateSigningKey.signedKey).keyExpiration)) {
-            throw Error('Intermediate signature key has expired');
-        }
-        return JSON.parse(payload.intermediateSigningKey.signedKey);
-    }
-
-    private generateSignedData(singedData: string, useRecepientId: boolean = false): Buffer {
-        /*
-            Generating buffer for checking signatures by contating byte lenght of each component. The length of the static components need to be in little-endian format.
-            For examples check https://developers.google.com/pay/api/web/guides/resources/payment-data-cryptography#decrypt-token
-        */
-        const senderLength: Buffer = Buffer.alloc(4);
-        const protocolLength: Buffer = Buffer.alloc(4);
-        const signedKeyLength: Buffer = Buffer.alloc(4);
-        senderLength.writeUint32LE(SENDER_ID.length);
-        protocolLength.writeUint32LE(PROTOCOL_VERSION.length);
-        signedKeyLength.writeUint32LE(singedData.length);
-
-        if (useRecepientId) {
-            const gatewayId: string = `gateway:${this.gatewayId}`;
-            const gatewayIdLength: Buffer = Buffer.alloc(4);
-            gatewayIdLength.writeUint32LE(gatewayId.length);
-
-            return Buffer.concat([senderLength, Buffer.from(SENDER_ID, 'utf8'), gatewayIdLength, Buffer.from(gatewayId, 'utf8'), protocolLength, Buffer.from(PROTOCOL_VERSION, 'utf8'), signedKeyLength, Buffer.from(singedData, 'utf8')]);
-        }
-
-        return Buffer.concat([senderLength, Buffer.from(SENDER_ID, 'utf8'), protocolLength, Buffer.from(PROTOCOL_VERSION, 'utf8'), signedKeyLength, Buffer.from(singedData, 'utf8')]);
-    }
-
-    private verifyIntermediateSignature (payload: GooglePayPayload) {
-        let validSignature: boolean = false;
-        const intermediateSigningKey: IntermediateSigningKey = payload.intermediateSigningKey;
-        const intermediateSignatureBuffer: Buffer = this.generateSignedData(intermediateSigningKey.signedKey);
-
-        this.rootSigningKeys.forEach(key => {
-            const publicKey: KeyObject = createPublicKey({
-                key: key.keyValue,
-                format: 'der',
-                type: 'spki',
-                encoding: 'base64'
-            });
-            const verify: Verify = createVerify(ALGORITHM);
-            verify.write(intermediateSignatureBuffer);
-            verify.end();
-
-            intermediateSigningKey.signatures.forEach((signature) => {
-                if (verify.verify(publicKey, signature, 'base64')) {
-                    validSignature = true;
-                }
-            });
-        });
-
-        if (!validSignature) {
-            throw Error('Could not verify intermediate signing key signature');
-        }
-    }
-
-    private verifyMessageSignature (signedKey: GoogleSignedKey, payload: GooglePayPayload) {
-        const publicKey: KeyObject = createPublicKey({
-            key: signedKey.keyValue,
-            format: 'der',
-            type: 'spki',
-            encoding: 'base64'
-        });
-        const signedData: Buffer = this.generateSignedData(payload.signedMessage, true);
-        const verify: Verify = createVerify(ALGORITHM);
-        verify.write(signedData);
-        verify.end();
-
-        if (!verify.verify(publicKey, payload.signature, 'base64')) {
-            throw Error('Could not verify message signature!');
-        }
-    }
+  }
 }
