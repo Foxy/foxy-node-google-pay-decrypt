@@ -1,6 +1,6 @@
 {
   "name": "foxy-node-google-pay-decrypt",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "This package allows you to decrypt a token received from Google Pay.",
   "module": "index.js",
   "type": "module",
@@ -16,7 +16,7 @@
     "google",
     "pay"
   ],
-  "author": "",
+  "author": "Foxy.io",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/Foxy/foxy-node-google-pay-decrypt/issues"
