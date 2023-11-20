@@ -1,5 +1,5 @@
 {
-  "name": "foxy-node-google-pay-decrypt",
+  "name": "@foxy.io/foxy-node-google-pay-decrypt",
   "version": "1.0.0",
   "description": "This package allows you to decrypt a token received from Google Pay.",
   "module": "index.js",
