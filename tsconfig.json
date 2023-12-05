@@ -7,6 +7,6 @@
     "lib": ["ES2015"]
   },
   "extends": "@tsconfig/strictest/tsconfig.json",
-  "include": ["*.ts", "src/ambient.d.ts", "src/index.ts", "src/types.d.ts"],
+  "include": ["src/*.ts"],
   "exclude": ["node_modules"]
 }
