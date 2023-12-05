@@ -12,7 +12,7 @@ import type {
   GooglePayPayload,
   GoogleSignedKey,
   DecryptedData,
-} from "./types.d.ts";
+} from "./types";
 
 import ECKey from "ec-key";
 
@@ -115,7 +115,6 @@ export default class GooglePaymentToken {
 
     try {
       decryptedData = JSON.parse(decrypted) as DecryptedData;
-
     } catch {
       throw Error(`Decoded payload is not a valid JSON string: ${decrypted}`);
     }

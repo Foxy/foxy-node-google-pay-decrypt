@@ -1,12 +1,12 @@
 {
   "compilerOptions": {
-    "moduleResolution": "Node16",
-    "declaration": true,
-    "target": "ES2022",
-    "module": "Node16",
-    "lib": ["ES2023"]
+    "moduleResolution": "Node",
+    "baseUrl": ".",
+    "target": "ES2015",
+    "module": "CommonJS",
+    "lib": ["ES2015"]
   },
   "extends": "@tsconfig/strictest/tsconfig.json",
-  "include": ["*.ts"],
+  "include": ["*.ts", "src/ambient.d.ts", "src/index.ts", "src/types.d.ts"],
   "exclude": ["node_modules"]
 }

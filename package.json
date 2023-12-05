@@ -1,12 +1,20 @@
 {
   "name": "@foxy.io/google-pay-decrypt",
-  "version": "1.0.0",
+  "type": "commonjs",
+  "version": "0.0.0",
   "description": "This package allows you to decrypt a token received from Google Pay.",
-  "module": "index.js",
-  "type": "module",
+  "main": "dist/cjs/index.js",
+  "types": "dist/types/index.d.ts",
+  "module": "dist/esm/index.js",
   "scripts": {
-    "prepack": "tsc"
+    "prepack": "rimraf dist && run-p \"build:!(docs)\"",
+    "build:cjs": "tsc --outdir \"dist/cjs\"",
+    "build:esm": "tsc --project tsconfig.esm.json --outdir \"dist/esm\" && copyfiles --up 1 \"./build/esm/**/*\" \"./dist\"",
+    "build:types": "tsc --declarationdir \"dist/types\" --declaration --emitdeclarationonly && copyfiles --up 1 \"./src/**/*.d.ts\" \"./dist/types\""
   },
+  "files": [
+    "dist"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Foxy/foxy-node-google-pay-decrypt.git"
@@ -34,6 +42,9 @@
   "devDependencies": {
     "@tsconfig/strictest": "^2.0.2",
     "@types/node": "^20.8.7",
+    "copyfiles": "^2.4.1",
+    "npm-run-all": "^4.1.5",
+    "rimraf": "^5.0.5",
     "semantic-release": "^22.0.7",
     "typescript": "^5.2.2"
   }
