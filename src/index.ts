@@ -32,11 +32,11 @@ export default class GooglePaymentToken {
 
   private __rootSigningKeys: GoogleRootSigningKeys[];
   private __privateKey: ECKey;
-  private __gatewayId: string;
+  private __recipientId: string;
 
   constructor(
     rootSigningKeys: GoogleRootSigningKeys[],
-    gatewayId: string,
+    recipientId: string,
     privateKeyRaw: string
   ) {
     const now = Date.now();
@@ -55,7 +55,7 @@ export default class GooglePaymentToken {
 
     this.__rootSigningKeys = validKeys;
     this.__privateKey = new ECKey(privateKeyRaw, "pem");
-    this.__gatewayId = gatewayId;
+    this.__recipientId = recipientId;
   }
 
   decrypt(payload: GooglePayPayload): DecryptedData {
@@ -150,15 +150,15 @@ export default class GooglePaymentToken {
     signedKeyLength.writeUint32LE(singedData.length);
 
     if (useRecepientId) {
-      const gatewayId = `gateway:${this.__gatewayId}`;
-      const gatewayIdLength = Buffer.alloc(4);
-      gatewayIdLength.writeUint32LE(gatewayId.length);
+      const recipientId = this.__recipientId;
+      const recipientIdLength = Buffer.alloc(4);
+      recipientIdLength.writeUint32LE(recipientId.length);
 
       return Buffer.concat([
         senderLength,
         Buffer.from(GooglePaymentToken.SENDER_ID, "utf8"),
-        gatewayIdLength,
-        Buffer.from(gatewayId, "utf8"),
+        recipientIdLength,
+        Buffer.from(recipientId, "utf8"),
         protocolLength,
         Buffer.from(GooglePaymentToken.PROTOCOL_VERSION, "utf8"),
         signedKeyLength,
