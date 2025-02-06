@@ -9,7 +9,7 @@ The decryption methodology of this package is largely taken from the [Python Goo
 ## Getting Started
 
 ```sh
-npm i foxy-node-google-pay-decrypt
+npm i @foxy.io/google-pay-decrypt
 ```
 
 In order to decrypt the token, you will need the `.pem` file, the gateway id, and Google signing keys.
